@@ -201,45 +201,45 @@ def buoy_scaley(dfy, default_scaler=MinMaxScaler(), scaler=None):
 df = load_and_combine_jsons(directory_path, time_column_name)
 
 def get_data(df):
-    
-    
+
+
     columns_to_convert = ['askVolume', 'bidVolume']
-    
+
     # Convert the specified columns to floats
     # df[columns_to_convert] = df[columns_to_convert].astype(float)
-    
+
     for column in columns_to_convert:
         df[column] = df[column].apply(lambda d: float(d.get("low", 0)) if isinstance(d, dict) else 0)
-    
+
     df['time'] = df['datetime'].copy()
     df.drop('datetime', axis=1, inplace=True)
     target = 'high'
-    
+
     df_train, df_test = df_traintest(df, .2)
     print(f'train size = {len(df_train)}\ntest size = {len(df_test)}')
     print(f'df_train.info():\n{df.info()}')
-    
+
     dfy_train = pd.DataFrame(df_train[target].copy())
     # scale ytrain, and retrieve scaler
     dfy_train_processed,  yscaler = buoy_scaley(dfy_train)
-    
-    
+
+
     # define X
     dfX_train = df_train.drop(target, axis=1)
     # encode and scale X, retrieve scaler
     print(f' looking for "time" in this... and why do we need time in it and where did we drop it? {dfX_train.info()}')
-          
+
     Xscaler=MinMaxScaler(feature_range=(0,1))
     #   separate time, reset index so I can merge without nan
     df_train_time = pd.DataFrame(df_train['time'])
     df_train_time.reset_index(inplace=True)
     df_train_time.drop('index', axis=1,inplace=True)
-    
+
     # separate categorical and numerical
-    # df_cat = df.select_dtypes(include = 'object') 
+    # df_cat = df.select_dtypes(include = 'object')
     df_num = df_train.select_dtypes(exclude = 'object').drop(df_train_time.columns, axis=1)
     num_columns = df_num.columns
-    
+
     # encode dummies, reset index so I can merge without nan
     # dummy_df_cat = pd.get_dummies(df_cat)
     # dummy_df_cat.reset_index(inplace=True)
@@ -252,27 +252,27 @@ def get_data(df):
     #     return processed_df, Xscaler
     # else:
     # dfX_train_processed, Xscaler= buoy_encodeNscaleX(dfX_train)
-    
-    
+
+
     joblib.dump(Xscaler, "Xscaler_stock.pkl")
     joblib.dump(yscaler, "yscaler_stock.pkl")
     # separate test X and y
     dfy_test = pd.DataFrame(df_test[target].copy())
-    
-    
+
+
     scaler = Xscaler
-    
+
     #   separate time, reset index so I can merge without nan
     df_test_time = pd.DataFrame(df_test['time'])
     df_test_time.reset_index(inplace=True)
     df_test_time.drop('index', axis=1,inplace=True)
-        
-    
+
+
     # separate categorical and numerical
-    # df_cat = df.select_dtypes(include = 'object') 
+    # df_cat = df.select_dtypes(include = 'object')
     df_num = df_test.select_dtypes(exclude = 'object').drop(df_test_time.columns, axis=1)
     num_columns = df_num.columns
-    
+
     # encode dummies, reset index so I can merge without nan
     # dummy_df_cat = pd.get_dummies(df_cat)
     # dummy_df_cat.reset_index(inplace=True)
@@ -285,15 +285,15 @@ def get_data(df):
     dfX_test_processed = pd.concat([dfX_test_processed, df_test_time], axis = 1)
     #     return processed_df, Xscaler
     # else:
-    
-    
+
+
         # processed_df = pd.concat([df_num_scaled, dummy_df_cat, df_time], axis = 1)
         # return processed_df
-    
-    
-    
-    
-    
+
+
+
+
+
     # apply prefit Xscaler and yscaler to test
     # dfX_test_processed = buoy_encodeNscaleX(dfX_test, scaler =Xscaler )
     dfy_test_processed = buoy_scaley(dfy_test, scaler=yscaler)
@@ -304,26 +304,26 @@ def get_data(df):
     dfX_train_processed_same, dfX_test_processed_same = buoy_setcols(dfX_train_processed, dfX_test_processed)
     dfX_train_processed_same.shape[1] ==dfX_test_processed_same.shape[1]
     dfX_train_processed_same.columns==dfX_test_processed_same.columns
-    
-    
+
+
     n_outputs = 1
     n_timesteps = 20
     lead_time = 0 #
-    
+
     zdf_train = dfX_train_processed.copy()
     zdf_test = dfX_test_processed.copy()
-    
-    
+
+
     zdf_train['time'] = pd.to_datetime(zdf_train['time'])
     zdf_test['time'] = pd.to_datetime(zdf_test['time'])
-    
-    
-    
-    
+
+
+
+
     X_train, y_train, traindex = get_data_contiguous(dfX=zdf_train, dfy=dfy_train_processed, n_timesteps=n_timesteps, num_outputs=n_outputs, lead_time=lead_time, timestep_size=120)
     X_test, y_test, testdex = get_data_contiguous(dfX=zdf_test, dfy=dfy_test_processed, n_timesteps=n_timesteps, num_outputs=n_outputs, lead_time=lead_time, timestep_size=120)
-    
-    
+
+
 return all_that_shit #I mean ALLL that shiiitt....
 
 
@@ -354,17 +354,17 @@ n_features = X_train.shape[2]
 #     model.add(LSTM(input_nodes, activation='relu', return_sequences=False, kernel_initializer='he_uniform', input_shape=(n_timesteps, n_features)))
 #     model.add(Dense(2))
 #     model.add(Dense(1))
-    
+
 #     # Define the learning rate schedule
 #     lr_schedule = ExponentialDecay(
 #         initial_learning_rate=initial_lr,
 #         decay_steps=decay_steps,
 #         decay_rate=decay_rate,
 #         staircase=True)  # 'staircase=False' for smooth decay, 'True' for discrete steps
-    
+
 #     # Incorporate the learning rate schedule into the optimizer
 #     optimizer = Adam(learning_rate=lr_schedule)
-    
+
 #     model.compile(loss=loss_func, optimizer=optimizer)
 #     return model
 # model = make_model()
@@ -456,20 +456,20 @@ plt.xlabel("Epochs")
 plt.ylabel("Loss")
 plt.show()
 
-"""OK.... 
+"""OK....
 
 for a first run. now lets get yhat and see how it compares to y_test
 """
-def mape(yhat, y_test): 
-    n = len(yhat) 
-    mape = 100 * (1/n) * np.sum(np.abs((y_test-yhat)/y_test)) 
+def mape(yhat, y_test):
+    n = len(yhat)
+    mape = 100 * (1/n) * np.sum(np.abs((y_test-yhat)/y_test))
     return mape
-def mape(yhat, y_test): 
-    n = len(yhat) 
-    mape_sum = 0  
-    for i in range(n): 
-        mape_sum += np.abs((y_test[i]-yhat[i])/y_test[i]) 
-    mape = 100 * (1/n) * mape_sum 
+def mape(yhat, y_test):
+    n = len(yhat)
+    mape_sum = 0
+    for i in range(n):
+        mape_sum += np.abs((y_test[i]-yhat[i])/y_test[i])
+    mape = 100 * (1/n) * mape_sum
     return mape
 def mape(yhat, y_test):
   errors = np.abs((yhat - y_test)/y_test)
@@ -509,23 +509,61 @@ fig.show()
 # include array indices (timestamps)
 # why is it off by 57? predictions are close byt off (in the graph)
 
-def uperdown(df):
-    '''
-    creates a new column in df that indicates whether the target column of a dataframe went up or down in value since the last "lookback_window" rows outside of a threshold:  
-        (it will look back lookback_widow rows and compare that value with the value in the current value.)
-        1 indicates up, -1 indicates down, 0 indicates no change outside of the threshold
-        
+def up_or_down(df, target_column, lookback_windows, threshold):
+    """
+    Adds multiple columns to the input DataFrame indicating the direction of change in the target column's value.
+    Each new column corresponds to a lookback window specified in 'lookback_windows'. The function determines if the value in
+    the target column has gone up, down, or remained unchanged within a threshold over each lookback period.
 
-    Parameters
-    ----------
-    df : TYPE
-        DESCRIPTION.
+    Parameters:
+    - df (pd.DataFrame): The input DataFrame.
+    - target_column (str): The name of the column to analyze for value changes.
+    - lookback_windows (list of int): A list of integers where each integer specifies a lookback window length.
+    - threshold (float): The minimum change required to consider the value as having moved up or down.
 
-    Returns
-    -------
-    df with new column direction_1out vs direction_2out...direction_n-out
-    '''
+    Returns:
+    - pd.DataFrame: The original DataFrame with added columns for each lookback window indicating the direction of change.
 
+    The added columns are named 'direction_{lookback_window}-out', where {lookback_window} is replaced with the actual window size.
+    Each cell in these columns can have a value of 1 (indicating an increase), -1 (indicating a decrease), or 0 (indicating no significant change).
+    """
+
+    # Validate inputs
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("df must be a pandas DataFrame.")
+    if target_column not in df.columns:
+        raise ValueError(f"{target_column} is not a column in the DataFrame.")
+    if not all(isinstance(window, int) and window > 0 for window in lookback_windows):
+        raise ValueError("lookback_windows must be a list of positive integers.")
+    if not isinstance(threshold, float) and not isinstance(threshold, int):
+        raise ValueError("threshold must be a float or an int.")
+
+    # Iterate over each lookback window to create new columns
+    for window in lookback_windows:
+        # Compute the difference between the current value and the value 'window' rows back
+        df[f'direction_{window}out'] = df[target_column].diff(periods=window)
+
+        # Apply the threshold to determine direction
+        df[f'direction_{window}out'] = np.select(
+            [
+                df[f'direction_{window}out'] > threshold,
+                df[f'direction_{window}out'] < -threshold
+            ],
+            [
+                1,  # Value went up
+                -1  # Value went down
+            ],
+            default=0  # No significant change
+        )
+
+    return df
+
+# Example usage:
+df = pd.DataFrame({'Price': [100, 105, 103, 108, 110, 109, 111]})
+lookback_windows = [1, 2, 3]
+threshold = 1.5
+df_with_direction = up_or_down(df, 'Price', lookback_windows, threshold)
+print(df_with_direction)
 
 
 
