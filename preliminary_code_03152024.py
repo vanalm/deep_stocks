@@ -9,9 +9,159 @@ from utils import smooth_dataframe, df_traintest, encode_dummies, get_data_conti
 from sklearn.preprocessing import MinMaxScaler
 import joblib
 import pandas as pd
+import numpy as np
+from tqdm import tqdm
+import os
+import pandas as pd
+import glob
+from data_prepper import get_buoy_training_data
+from matplotlib import pyplot as plt
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers.schedules import ExponentialDecay
+
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import LSTM
+from keras.optimizers import SGD
+import numpy as np
+import plotly.graph_objects as go
+import plotly.io as pio
+
+from utils import calculate_mape
 
 
 
+
+time_column_name = 'datetime'
+directory_path = '/Users/jacobvanalmelo/code/deep_stocks/data'
+
+def load_and_combine_jsons(directory_path, time_column_name):
+    """
+    Reads all JSON files from the provided directory, combines them into a single DataFrame,
+    and sorts the combined DataFrame based on the specified time column.
+
+    Parameters:
+    - directory_path: str, the path to the directory containing the JSON files.
+    - time_column_name: str, the name of the column used for sorting the data in time order.
+
+    Returns:
+    - combined_df: pandas.DataFrame, the combined DataFrame sorted based on the time column.
+    """
+
+    # Use glob to find all JSON files in the directory
+    json_files = glob.glob(f"{directory_path}/*.json")
+
+    # Initialize an empty list to store DataFrames
+    dfs = []
+
+    # Iterate over the JSON files, load each into a DataFrame, and append it to the list
+    for file_path in json_files:
+        df = pd.read_json(file_path)
+        dfs.append(df)
+
+    # Concatenate all DataFrames in the list into a single DataFrame
+    combined_df = pd.concat(dfs, ignore_index=True)
+
+    # Sort the combined DataFrame based on the time column
+    combined_df.sort_values(by=time_column_name, inplace=True)
+
+    return combined_df
+
+
+# Example usage
+# directory_path = 'path/to/your/directory'
+# time_column_name = 'your_time_column'
+# combined_df = load_and_combine_jsons(directory_path, time_column_name)
+# print(combined_df.head())
+
+
+def get_data_contiguous(dfX, dfy, n_timesteps, lead_time, num_outputs, timestep_size=3600):
+    """
+    Extracts contiguous blocks of data from input and target dataframes and prepares them for machine learning modeling (original case is LSTM).
+    This function walks through the dataset and makes one sample (X and y pair) at a time, and if the timesteps within it are contiguous, it is added to the data set.
+
+
+    Args:
+        dfX (pandas.DataFrame): The input dataframe containing the features. It should have a 'time' column and
+            other feature columns.
+        dfy (pandas.DataFrame): The target dataframe containing the output values. It should have a 'time' column
+            and other target columns.
+        n_timesteps (int): The number of consecutive timesteps to include in each input sample
+        lead_time (int): The number of timesteps between the last known value of X and the corresponding target value of y
+        num_outputs (int): The number of consecutive timesteps to include in each target sample.
+        timestep_size (int, optional): The duration of each timestep in seconds. Defaults to 3600 (seconds).
+
+    Returns:
+        tuple: A tuple containing three elements:
+            - X (numpy.ndarray): A 3-dimensional array representing the input samples, with shape
+              (num_samples, n_timesteps, num_features).
+            - y (numpy.ndarray): A 3-dimensional array representing the target samples, with shape
+              (num_samples, num_outputs, num_targets).
+            - y_index (list): A list containing the timestamps corresponding to each target sample.
+
+    Raises:
+        ValueError: If the lengths of the input and target dataframes are not the same.
+        KeyError: If the 'time' column does not exist in the input dataframe.
+
+    Notes:
+        - This function assumes that the input and target dataframes have consistent timestamps and order.
+        - Any missing or irregular timesteps in the input data will result in the corresponding samples being skipped.
+        - Any nan or None values in the input or target data will be replaced with 0.
+    """
+    # Error checking
+    if len(dfX) != len(dfy):
+        raise ValueError("Input and target dataframes must have the same length.")
+
+    if 'time' not in dfX.columns:
+        raise KeyError("'time' column must exist in the input dataframe.")
+
+    # Extract list of features, excluding "time"
+    X_features = [col for col in dfX.columns if col != 'time']
+
+    # If there's a 'time' column in dfy, use it for y_index but exclude from y
+    if 'time' in dfy.columns:
+        y_features = [col for col in dfy.columns if col != 'time']
+    else:
+        y_features = dfy.columns.tolist()
+
+    X, y, y_index = [], [], []
+    max_index = len(dfX) - n_timesteps - lead_time - num_outputs + 1
+
+    for i in tqdm(range(max_index), desc="Progress:", bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}'):
+        total_block = dfX.iloc[i : i + n_timesteps + lead_time + num_outputs]
+
+        time_diffs = total_block['time'].diff()[1:].dt.total_seconds()
+        # if not all(time_diffs == timestep_size):
+        #     continue
+
+        X_block = dfX.iloc[i : i + n_timesteps][X_features]
+        X.append(X_block.values)
+
+        y_start = i + n_timesteps + lead_time
+        y_end = y_start + num_outputs
+        y_block = dfy.iloc[y_start : y_end][y_features]
+        y.append(y_block.values.flatten().tolist())
+
+        if 'time' in dfy.columns:
+            y_index.extend(dfy.iloc[y_start : y_end]['time'].tolist())
+        else:
+            y_index.extend(dfX.iloc[y_start : y_end]['time'].tolist())
+
+    X = np.array(X, dtype=float)
+    y = np.array(y, dtype=float)
+
+    # Expanding dimensions of y to match with expected output
+    if len(y.shape) == 1:
+        y = np.expand_dims(y, axis=-1)
+
+    # Replacing any nan or None values with 0
+    X = np.nan_to_num(X, 0)
+    y = np.nan_to_num(y, 0)
+
+    return X, y, y_index
 # Function to scale y
 def buoy_scaley(dfy, default_scaler=MinMaxScaler(), scaler=None):
     """
@@ -43,15 +193,14 @@ def buoy_scaley(dfy, default_scaler=MinMaxScaler(), scaler=None):
 
 
 
-filename = "~/downloads/Fri-Dec-01-2023-09_30_00-GMT-0500.json"
 
 # todo scan folder and pull out .jsons
 # for each run this function and append to a list
 
 
+df = load_and_combine_jsons(directory_path, time_column_name)
 
-def get_data(filename):
-    df = pd.read_json(filename)
+def get_data(df):
     
     
     columns_to_convert = ['askVolume', 'bidVolume']
@@ -82,13 +231,13 @@ def get_data(filename):
           
     Xscaler=MinMaxScaler(feature_range=(0,1))
     #   separate time, reset index so I can merge without nan
-    df_time = pd.DataFrame(df_train['time'])
-    df_time.reset_index(inplace=True)
-    df_time.drop('index', axis=1,inplace=True)
+    df_train_time = pd.DataFrame(df_train['time'])
+    df_train_time.reset_index(inplace=True)
+    df_train_time.drop('index', axis=1,inplace=True)
     
     # separate categorical and numerical
     # df_cat = df.select_dtypes(include = 'object') 
-    df_num = df_train.select_dtypes(exclude = 'object').drop(df_time.columns, axis=1)
+    df_num = df_train.select_dtypes(exclude = 'object').drop(df_train_time.columns, axis=1)
     num_columns = df_num.columns
     
     # encode dummies, reset index so I can merge without nan
@@ -99,7 +248,7 @@ def get_data(filename):
     # if scaler == None:
     Xscaler.fit(df_num)
     dfX_train_processed = pd.DataFrame(Xscaler.transform(df_num), columns=num_columns)
-    # processed_df = pd.concat([df_num_scaled, dummy_df_cat, df_time], axis = 1)
+    dfX_train_processed = pd.concat([dfX_train_processed, df_train_time], axis = 1)
     #     return processed_df, Xscaler
     # else:
     # dfX_train_processed, Xscaler= buoy_encodeNscaleX(dfX_train)
@@ -114,14 +263,14 @@ def get_data(filename):
     scaler = Xscaler
     
     #   separate time, reset index so I can merge without nan
-    df_time = pd.DataFrame(df_test['time'])
-    df_time.reset_index(inplace=True)
-    df_time.drop('index', axis=1,inplace=True)
+    df_test_time = pd.DataFrame(df_test['time'])
+    df_test_time.reset_index(inplace=True)
+    df_test_time.drop('index', axis=1,inplace=True)
         
     
     # separate categorical and numerical
     # df_cat = df.select_dtypes(include = 'object') 
-    df_num = df_test.select_dtypes(exclude = 'object').drop(df_time.columns, axis=1)
+    df_num = df_test.select_dtypes(exclude = 'object').drop(df_test_time.columns, axis=1)
     num_columns = df_num.columns
     
     # encode dummies, reset index so I can merge without nan
@@ -132,10 +281,10 @@ def get_data(filename):
     # if scaler == None:
     #     Xscaler.fit(df_num)
     #     df_num_scaled = pd.DataFrame(Xscaler.transform(df_num), columns=num_columns)
-    #     processed_df = pd.concat([df_num_scaled, dummy_df_cat, df_time], axis = 1)
+    dfX_test_processed = pd.DataFrame(scaler.transform(df_num), columns=num_columns)
+    dfX_test_processed = pd.concat([dfX_test_processed, df_test_time], axis = 1)
     #     return processed_df, Xscaler
     # else:
-    dfX_test_processed = pd.DataFrame(scaler.transform(df_num), columns=num_columns)
     
     
         # processed_df = pd.concat([df_num_scaled, dummy_df_cat, df_time], axis = 1)
@@ -171,11 +320,11 @@ def get_data(filename):
     
     
     
-    X_train, y_train, traindex = get_data_contiguous(dfX=zdf_train, dfy=dfy_train_processed, n_timesteps=n_timesteps, num_outputs=n_outputs, lead_time=lead_time)
-    X_test, y_test, testdex = get_data_contiguous(dfX=zdf_test, dfy=dfy_test_processed, n_timesteps=n_timesteps, num_outputs=n_outputs, lead_time=lead_time)
+    X_train, y_train, traindex = get_data_contiguous(dfX=zdf_train, dfy=dfy_train_processed, n_timesteps=n_timesteps, num_outputs=n_outputs, lead_time=lead_time, timestep_size=120)
+    X_test, y_test, testdex = get_data_contiguous(dfX=zdf_test, dfy=dfy_test_processed, n_timesteps=n_timesteps, num_outputs=n_outputs, lead_time=lead_time, timestep_size=120)
     
     
-    return data
+return all_that_shit #I mean ALLL that shiiitt....
 
 
 
@@ -184,14 +333,198 @@ def get_data(filename):
 
 
 
+n_timesteps = X_train.shape[1]
+n_features = X_train.shape[2]
+
+# # define model
+# epochs= 10
+# batch_size = 32
+# verbose = 1
+# lrate=.004
+# loss_func = 'huber'
+# momentum = .9
+# input_nodes = 8
+# # opt = SGD(learning_rate=lrate,  decay = 1e-6, momentum=momentum, nesterov=True)
+# opt = SGD(learning_rate=lrate, momentum=momentum)
+
+# # opt = SGD(learning_rate=lrate,  momentum=momentum)
+# # define model
+# def make_model(initial_lr=0.004, decay_rate=0.0001, decay_steps=100):
+#     model = Sequential()
+#     model.add(LSTM(input_nodes, activation='relu', return_sequences=False, kernel_initializer='he_uniform', input_shape=(n_timesteps, n_features)))
+#     model.add(Dense(2))
+#     model.add(Dense(1))
+    
+#     # Define the learning rate schedule
+#     lr_schedule = ExponentialDecay(
+#         initial_learning_rate=initial_lr,
+#         decay_steps=decay_steps,
+#         decay_rate=decay_rate,
+#         staircase=True)  # 'staircase=False' for smooth decay, 'True' for discrete steps
+    
+#     # Incorporate the learning rate schedule into the optimizer
+#     optimizer = Adam(learning_rate=lr_schedule)
+    
+#     model.compile(loss=loss_func, optimizer=optimizer)
+#     return model
+# model = make_model()
+
+# history = model.fit(X_train, y_train, epochs=epochs, verbose=verbose, validation_data=(X_test, y_test))
+# loss = history.history['loss']
+# val_loss = history.history.get('val_loss', None)  # This might not exist if validation was not performed
+
+# # Creating the plot for the training loss
+# plt.plot(loss, label='Training Loss')
+
+# # If there's validation loss, add it to the plot
+# if val_loss is not None:
+#     plt.plot(val_loss, label='Validation Loss')
+
+# # Adding titles and labels
+# plt.title('Model Loss Over Epochs')
+# plt.ylabel('Loss')
+# plt.xlabel('Epoch')
+# plt.legend()
+
+# # Display the plot
+# plt.show()
 
 
 
 
 
 
+# yhat = model.predict(X_test)
+# yhat_unscaled = yscaler.inverse_transform(yhat)
+# y_test_unscaled = yscaler.inverse_transform(y_test)
+# mape = calculate_mape(yhat, y_test)
+# print(f'\n\n\n\nACTUAL MAPE:{mape}\n')
+# ###############################################################3 BELOW IS UNVERIFIED
+
+# pio.renderers.default='browser'
+
+# # Create traces
+# fig = go.Figure()
+# fig.add_trace(go.Scatter(y=yhat_unscaled[:,0],
+#                     mode='lines',
+#                     name='yhat_unscaled'))
+# fig.add_trace(go.Scatter(y=y_test_unscaled[:,0],
+#                     mode='lines',
+#                     name='y_test_unscaled'))
+# # fig.add_trace(go.Scatter(y=y_test_unscaled[:,0],
+# #                     mode='lines',
+# #                     name='y_test_unscaled'))
+# fig.update_layout(
+#     title="Actual vs Predicted Condition of lanai buoy (51213) based on '51003', '51004', '51211', and '51212', using 0 hour lead and the previous 16 hours back"
+# )
+
+# fig.show()
+
+# define model
+from keras.layers import Dropout
+
+epochs= 20
+# epochs= 15
+batch_size = 32
+verbose = 1
+lrate=.01
+momentum = .9
+# decay = 0.0005
+# decay = .0005
+
+opt = SGD(learning_rate=lrate,  momentum=momentum)
+print(n_timesteps, n_features, n_outputs, epochs, batch_size)
+# define model
+model = Sequential()
+model.add(LSTM(7, activation='relu', return_sequences=False,kernel_initializer='he_uniform', input_shape=(n_timesteps, n_features)))
+model.add(Dropout(.1))
+# model.add(LSTM(20, activation='relu'))
+# model.add(Dropout(.1))
+model.add(Dense(2))
+model.add(Dense(1))
+model.compile(loss='mean_absolute_error', optimizer=opt)
+history = model.fit(X_train, y_train, epochs=epochs, verbose=verbose)
+new_history = model.fit(X_train, y_train, epochs=50, verbose=verbose)
+filename = 'buoy_model_202306010.sav'
+joblib.dump(model, filename)
+
+loss = history.history.get("loss")
+loss = new_history.history.get("loss")
+plt.plot(loss)
+plt.title("Loss History")
+plt.xlabel("Epochs")
+plt.ylabel("Loss")
+plt.show()
+
+"""OK.... 
+
+for a first run. now lets get yhat and see how it compares to y_test
+"""
+def mape(yhat, y_test): 
+    n = len(yhat) 
+    mape = 100 * (1/n) * np.sum(np.abs((y_test-yhat)/y_test)) 
+    return mape
+def mape(yhat, y_test): 
+    n = len(yhat) 
+    mape_sum = 0  
+    for i in range(n): 
+        mape_sum += np.abs((y_test[i]-yhat[i])/y_test[i]) 
+    mape = 100 * (1/n) * mape_sum 
+    return mape
+def mape(yhat, y_test):
+  errors = np.abs((yhat - y_test)/y_test)
+  mape = 100 * errors.mean()
+  return mape
+
+yhat = model.predict(X_test)
+'''
+whoops, I'll have to fit a scaler directly to y in the future I guess... this is imperfect...
+'''
+yhat_unscaled = yscaler.inverse_transform(yhat)
+y_test_unscaled = yscaler.inverse_transform(y_test)
+mape = mape(yhat, y_test)
+###############################################################3 BELOW IS UNVERIFIED
+
+pio.renderers.default='browser'
+
+# Create traces
+fig = go.Figure()
+fig.add_trace(go.Scatter(y=yhat_unscaled[:,0],
+                    mode='lines',
+                    name='yhat_unscaled'))
+fig.add_trace(go.Scatter(y=y_test_unscaled[:,0],
+                    mode='lines',
+                    name='y_test_unscaled'))
+# fig.add_trace(go.Scatter(y=y_test_unscaled[:,0],
+#                     mode='lines',
+#                     name='y_test_unscaled'))
+fig.update_layout(
+    title="Actual vs Predicted Condition of 51205 based on 51000 and 51101 using 12 hour lead"
+)
+
+fig.show()
 
 
+
+# include array indices (timestamps)
+# why is it off by 57? predictions are close byt off (in the graph)
+
+def uperdown(df):
+    '''
+    creates a new column in df that indicates whether the target column of a dataframe went up or down in value since the last "lookback_window" rows outside of a threshold:  
+        (it will look back lookback_widow rows and compare that value with the value in the current value.)
+        1 indicates up, -1 indicates down, 0 indicates no change outside of the threshold
+        
+
+    Parameters
+    ----------
+    df : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    df with new column direction_1out vs direction_2out...direction_n-out
+    '''
 
 
 
