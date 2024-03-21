@@ -565,7 +565,31 @@ threshold = 1.5
 df_with_direction = up_or_down(df, 'Price', lookback_windows, threshold)
 print(df_with_direction)
 
+# Here are notes for a new function to assess whether the price will break certain bounds within the next window
 
+def BounderBreakers():
+    '''
+    this function takes in a dataframe and for each timestamp looks backward (back_window) and creates a new colum "future_movement that indicates
+    how the stock value moves in the future by computing the mean and stdv for all of the previous low values and the same for the high values, 
+    then looks forwrd forward_window timesteps and determines whether the forward highs break the [previous high stdv *2] first (1) 
+    or whther the anologue occurs with the low values first (-1) if neither (0) or both (NaN) occur within the forward window.
+
+
+    ARGUMENTS:
+    boundary_style: is 
+        back_window: how many timesteps backward are we looking? (60)
+        front_winow: how many timesteps foward are we looking? (10)
+        df: pandas dataframe input that has 'high', 'low', and 'close' attributes
+
+    This function takes in a pandas dataframe and creates a new column that has the value future_movement and denotes 
+    whether the price exceeds the upper (1) the lower(-1) or neither (0) or both (-1) within the front_window time ahead
+
+    OUTPUT: df with a new column labeled "future_movement"
+    
+    '''
+
+
+    return df
 
 
 
