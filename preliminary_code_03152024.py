@@ -5,7 +5,7 @@ Created on Fri Mar 15 18:10:30 2024
 
 @author: jacobvanalmelo
 """
-from utils import smooth_dataframe, df_traintest, encode_dummies, get_data_contiguous, load_scalers, calculate_mape, buoy_encodeNscaleX, buoy_scaley, buoy_setcols
+# from utils import smooth_dataframe, df_traintest, encode_dummies, get_data_contiguous, load_scalers, calculate_mape, buoy_encodeNscaleX, buoy_scaley, buoy_setcols
 from sklearn.preprocessing import MinMaxScaler
 import joblib
 import pandas as pd
@@ -14,7 +14,7 @@ from tqdm import tqdm
 import os
 import pandas as pd
 import glob
-from data_prepper import get_buoy_training_data
+# from data_prepper import get_buoy_training_data
 from matplotlib import pyplot as plt
 
 from tensorflow.keras.models import Sequential
@@ -30,13 +30,189 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from utils import calculate_mape
+# from utils import calculate_mape
 
+pd.set_option('display.max_columns', None)
 
 
 
 time_column_name = 'datetime'
 directory_path = '/Users/jacobvanalmelo/code/deep_stocks/data'
+
+
+
+def BoundryBreaker(df, back_window=60, forward_window=10, confirmation_window=3):
+    """
+    Enhances stock market trend analysis by identifying significant future movements,
+    incorporating a confirmation window to mitigate the impact of stop hunting,
+    with a progress bar to visualize computation progress.
+
+    Parameters:
+    df (pandas.DataFrame): Input dataframe with 'high', 'low', and 'close' columns.
+    back_window (int): Number of timesteps to look backward to calculate statistical thresholds.
+    forward_window (int): Number of timesteps to look forward to check for threshold breaches.
+    confirmation_window (int): Minimum number of timesteps a price must exceed the threshold
+                               within the forward window to confirm a trend.
+
+    Returns:
+    pandas.DataFrame: The input dataframe enhanced with a 'future_movement' column,
+                      indicating the direction and confirmation of significant price movements.
+    """
+
+    # Validate required columns in the dataframe
+    if not {'high', 'low', 'close'}.issubset(df.columns):
+        raise ValueError("DataFrame must contain 'high', 'low', and 'close' columns")
+
+    # Initialize the 'future_movement' column to zero
+    df['future_movement'] = 0
+
+    # Use tqdm to show progress bar, iterating over the relevant range of the dataframe
+    for i in tqdm(range(back_window, len(df) - forward_window), desc="Analyzing Trends"):
+        # Calculate mean and standard deviation for high and low prices over the back_window period
+        high_mean = df['high'][i-back_window:i].mean()
+        high_std = df['high'][i-back_window:i].std()
+        low_mean = df['low'][i-back_window:i].mean()
+        low_std = df['low'][i-back_window:i].std()
+
+        # Define upper and lower bounds based on mean and standard deviation
+        upper_bound = high_mean + 2 * high_std
+        lower_bound = low_mean - 2 * low_std
+
+        # Analyze future price movements within the forward_window period
+        future_highs = df['high'][i+1:i+1+forward_window]
+        future_lows = df['low'][i+1:i+1+forward_window]
+
+        # Count the number of times future prices break the bounds
+        high_break_count = (future_highs > upper_bound).sum()
+        low_break_count = (future_lows < lower_bound).sum()
+
+        # Determine the trend based on break counts and confirmation_window
+        if high_break_count >= confirmation_window and low_break_count < confirmation_window:
+            df.at[i, 'future_movement'] = 1  # Confirmed upward trend
+        elif low_break_count >= confirmation_window and high_break_count < confirmation_window:
+            df.at[i, 'future_movement'] = -1  # Confirmed downward trend
+        elif high_break_count >= confirmation_window and low_break_count >= confirmation_window:
+            df.at[i, 'future_movement'] = np.NaN  # Inconclusive, both bounds breached
+        else:
+            df.at[i, 'future_movement'] = 0  # No significant movement confirmed
+
+    # Fill the initial and final periods with NaN where analysis is not possible
+    df['future_movement'][:back_window] = np.NaN
+    df['future_movement'][-forward_window:] = np.NaN
+
+    return df
+
+
+# include array indices (timestamps)
+# why is it off by 57? predictions are close byt off (in the graph)
+
+def up_or_down(df, target_column='close', lookback_windows=60, threshold=2):
+    #@just made up the arguments 60 and 2
+    """
+    Adds multiple columns to the input DataFrame indicating the direction of change in the target column's value.
+    Each new column corresponds to a lookback window specified in 'lookback_windows'. The function determines if the value in
+    the target column has gone up, down, or remained unchanged within a threshold over each lookback period.
+
+    Parameters:
+    - df (pd.DataFrame): The input DataFrame.
+    - target_column (str): The name of the column to analyze for value changes.
+    - lookback_windows (list of int): A list of integers where each integer specifies a lookback window length.
+    - threshold (float): The minimum change required to consider the value as having moved up or down.
+
+    Returns:
+    - pd.DataFrame: The original DataFrame with added columns for each lookback window indicating the direction of change.
+
+    The added columns are named 'direction_{lookback_window}-out', where {lookback_window} is replaced with the actual window size.
+    Each cell in these columns can have a value of 1 (indicating an increase), -1 (indicating a decrease), or 0 (indicating no significant change).
+    """
+
+    # Validate inputs
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("df must be a pandas DataFrame.")
+    if target_column not in df.columns:
+        raise ValueError(f"{target_column} is not a column in the DataFrame.")
+    if not all(isinstance(window, int) and window > 0 for window in lookback_windows):
+        raise ValueError("lookback_windows must be a list of positive integers.")
+    if not isinstance(threshold, float) and not isinstance(threshold, int):
+        raise ValueError("threshold must be a float or an int.")
+
+    # Iterate over each lookback window to create new columns
+    for window in lookback_windows:
+        # Compute the difference between the current value and the value 'window' rows back
+        df[f'direction_{window}out'] = df[target_column].diff(periods=window)
+
+        # Apply the threshold to determine direction
+        df[f'direction_{window}out'] = np.select(
+            [
+                df[f'direction_{window}out'] > threshold,
+                df[f'direction_{window}out'] < -threshold
+            ],
+            [
+                1,  # Value went up
+                -1  # Value went down
+            ],
+            default=0  # No significant change
+        )
+
+    return df
+
+
+
+def buoy_setcols(df1: pd.DataFrame, df2: pd.DataFrame, show: bool = False) -> (pd.DataFrame, pd.DataFrame):
+    """
+    Ensure df1 and df2 have the same columns. Missing columns in either are added with None values.
+
+    Parameters:
+    df1 (pd.DataFrame): First DataFrame to harmonize.
+    df2 (pd.DataFrame): Second DataFrame to harmonize.
+    show (bool): If True, prints the first few rows of the dataframes for inspection.
+
+    Returns:
+    A tuple of DataFrames (df1, df2) with harmonized column structures.
+    """
+
+    # Debugging: Print initial shapes
+    print(f"Initial shapes - df1: {df1.shape}, df2: {df2.shape}")
+
+    # Determine columns present in one DataFrame but not the other
+    diff_cols_for2 = list(set(df1.columns) - set(df2.columns))
+    diff_cols_for1 = list(set(df2.columns) - set(df1.columns))
+
+    # Debugging: Print missing columns for verification
+    print(f"Columns to add to df1: {diff_cols_for1}")
+    print(f"Columns to add to df2: {diff_cols_for2}")
+
+    # Add missing columns with None values. This approach preserves the original index.
+    for col in diff_cols_for1:
+        df1[col] = None
+    for col in diff_cols_for2:
+        df2[col] = None
+
+    # Ensure consistent column order between df1 and df2
+    combined_cols = sorted(set(df1.columns) | set(df2.columns))
+    df1 = df1.reindex(columns=combined_cols)
+    df2 = df2.reindex(columns=combined_cols)
+
+    # Show the first few rows of each DataFrame if requested
+    if show:
+        print("df1 head:\n", df1.head())
+        print("df2 head:\n", df2.head())
+
+    # Debugging: Print final shapes for verification
+    print(f"Final shapes - df1: {df1.shape}, df2: {df2.shape}")
+
+    # Check for successful harmonization
+    assert df1.shape[1] == df2.shape[1], "DataFrames do not have the same number of columns after harmonization."
+    assert set(df1.columns) == set(df2.columns), "DataFrames do not have the same columns after harmonization."
+
+    return df1, df2
+
+def df_traintest(df, test_size):
+    test_size = int(test_size*df.shape[0])
+    train_size = df.shape[0]-test_size
+    df_train = df[0:train_size]
+    df_test = df[train_size:]
+    return df_train, df_test
 
 def load_and_combine_jsons(directory_path, time_column_name):
     """
@@ -506,93 +682,18 @@ fig.show()
 
 
 
-# include array indices (timestamps)
-# why is it off by 57? predictions are close byt off (in the graph)
-
-def up_or_down(df, target_column, lookback_windows, threshold):
-    """
-    Adds multiple columns to the input DataFrame indicating the direction of change in the target column's value.
-    Each new column corresponds to a lookback window specified in 'lookback_windows'. The function determines if the value in
-    the target column has gone up, down, or remained unchanged within a threshold over each lookback period.
-
-    Parameters:
-    - df (pd.DataFrame): The input DataFrame.
-    - target_column (str): The name of the column to analyze for value changes.
-    - lookback_windows (list of int): A list of integers where each integer specifies a lookback window length.
-    - threshold (float): The minimum change required to consider the value as having moved up or down.
-
-    Returns:
-    - pd.DataFrame: The original DataFrame with added columns for each lookback window indicating the direction of change.
-
-    The added columns are named 'direction_{lookback_window}-out', where {lookback_window} is replaced with the actual window size.
-    Each cell in these columns can have a value of 1 (indicating an increase), -1 (indicating a decrease), or 0 (indicating no significant change).
-    """
-
-    # Validate inputs
-    if not isinstance(df, pd.DataFrame):
-        raise ValueError("df must be a pandas DataFrame.")
-    if target_column not in df.columns:
-        raise ValueError(f"{target_column} is not a column in the DataFrame.")
-    if not all(isinstance(window, int) and window > 0 for window in lookback_windows):
-        raise ValueError("lookback_windows must be a list of positive integers.")
-    if not isinstance(threshold, float) and not isinstance(threshold, int):
-        raise ValueError("threshold must be a float or an int.")
-
-    # Iterate over each lookback window to create new columns
-    for window in lookback_windows:
-        # Compute the difference between the current value and the value 'window' rows back
-        df[f'direction_{window}out'] = df[target_column].diff(periods=window)
-
-        # Apply the threshold to determine direction
-        df[f'direction_{window}out'] = np.select(
-            [
-                df[f'direction_{window}out'] > threshold,
-                df[f'direction_{window}out'] < -threshold
-            ],
-            [
-                1,  # Value went up
-                -1  # Value went down
-            ],
-            default=0  # No significant change
-        )
-
-    return df
-
 # Example usage:
-df = pd.DataFrame({'Price': [100, 105, 103, 108, 110, 109, 111]})
-lookback_windows = [1, 2, 3]
-threshold = 1.5
-df_with_direction = up_or_down(df, 'Price', lookback_windows, threshold)
-print(df_with_direction)
+# df = pd.DataFrame({'Price': [100, 105, 103, 108, 110, 109, 111]})
+# lookback_windows = [1, 2, 3]
+# threshold = 1.5
+# df_with_direction = up_or_down(df, 'Price', lookback_windows, threshold)
+# print(df_with_direction)
 
 # Here are notes for a new function to assess whether the price will break certain bounds within the next window
 
-def BounderBreakers():
-    '''
-    this function takes in a dataframe and for each timestamp looks backward (back_window) and creates a new colum "future_movement that indicates
-    how the stock value moves in the future by computing the mean and stdv for all of the previous low values and the same for the high values, 
-    then looks forwrd forward_window timesteps and determines whether the forward highs break the [previous high stdv *2] first (1) 
-    or whther the anologue occurs with the low values first (-1) if neither (0) or both (NaN) occur within the forward window.
 
 
-    ARGUMENTS:
-    boundary_style: is 
-        back_window: how many timesteps backward are we looking? (60)
-        front_winow: how many timesteps foward are we looking? (10)
-        df: pandas dataframe input that has 'high', 'low', and 'close' attributes
-
-    This function takes in a pandas dataframe and creates a new column that has the value future_movement and denotes 
-    whether the price exceeds the upper (1) the lower(-1) or neither (0) or both (-1) within the front_window time ahead
-
-    OUTPUT: df with a new column labeled "future_movement"
-    
-    '''
-
-
-    return df
-
-
-
+test_df = BoundryBreaker(df_train)
 
 
 
